@@ -137,6 +137,38 @@ func observationsCompletion(api *client) error {
 		return err
 	}
 
+	sealedObservation, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/observations",
+		map[string]any{
+			"sequence":      4,
+			"gravity":       1.012,
+			"temperature_c": 20,
+			"observed_at":   verifiedAt(base, 4),
+			"note":          "post completion",
+		}, ptrInt64(completed.Run.Version))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(sealedObservation, 409, string(domain.CodeRunState),
+		"append observation after completion"); err != nil {
+		return err
+	}
+
+	vesselResponse, err := api.call("GET", "/v1/vessels/"+vessel.ID, nil, nil)
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(vesselResponse, 200, "read completed vessel"); err != nil {
+		return err
+	}
+	var vesselRead vesselView
+	if err := vesselResponse.decode(&vesselRead); err != nil {
+		return err
+	}
+	if vesselRead.Version != completed.Vessel.Version ||
+		vesselRead.State != domain.VesselCleaning {
+		return errInvalidWorkflow("rejected completion changed the vessel")
+	}
+
 	readResponse, err := api.call("GET", "/v1/runs/"+started.Run.ID, nil, nil)
 	if err != nil {
 		return err
@@ -150,6 +182,93 @@ func observationsCompletion(api *client) error {
 	}
 	if len(readBack.Observations) != 3 || readBack.Metrics == nil {
 		return errInvalidWorkflow("completed run lost observations or metrics")
+	}
+	if readBack.Version != completed.Run.Version {
+		return errInvalidWorkflow("rejected writes changed the completed run version")
+	}
+	return verifyAbortedRunSeal(api, formula.ID)
+}
+
+func verifyAbortedRunSeal(api *client, formulaID string) error {
+	secondVessel, err := createCheckVessel(api, "VSL-203", 300)
+	if err != nil {
+		return err
+	}
+	started, err := createStartedRun(api, formulaID, secondVessel.ID, "RUN-ABORT-SEAL")
+	if err != nil {
+		return err
+	}
+	abortResponse, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/abort",
+		nil, ptrInt64(started.Run.Version))
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(abortResponse, 200, "abort run"); err != nil {
+		return err
+	}
+	var aborted pairView
+	if err := abortResponse.decode(&aborted); err != nil {
+		return err
+	}
+	if err := requireRunState(aborted.Run, domain.RunAborted); err != nil {
+		return err
+	}
+	if err := requireVesselState(aborted.Vessel, domain.VesselCleaning); err != nil {
+		return err
+	}
+
+	observationResponse, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/observations",
+		map[string]any{
+			"sequence":      1,
+			"gravity":       1.050,
+			"temperature_c": 20,
+			"observed_at":   time.Now().UTC(),
+			"note":          "post abort",
+		}, ptrInt64(aborted.Run.Version))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(observationResponse, 409, string(domain.CodeRunState),
+		"append observation after abort"); err != nil {
+		return err
+	}
+
+	repeatAbort, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/abort",
+		nil, ptrInt64(aborted.Run.Version))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(repeatAbort, 409, string(domain.CodeRunState),
+		"abort run twice"); err != nil {
+		return err
+	}
+
+	completeResponse, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/complete",
+		nil, ptrInt64(aborted.Run.Version))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(completeResponse, 409, string(domain.CodeRunState),
+		"complete aborted run"); err != nil {
+		return err
+	}
+
+	readResponse, err := api.call("GET", "/v1/runs/"+started.Run.ID, nil, nil)
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(readResponse, 200, "read aborted run"); err != nil {
+		return err
+	}
+	var readBack runView
+	if err := readResponse.decode(&readBack); err != nil {
+		return err
+	}
+	if err := requireRunState(readBack, domain.RunAborted); err != nil {
+		return err
+	}
+	if readBack.Version != aborted.Run.Version || len(readBack.Observations) != 0 {
+		return errInvalidWorkflow("rejected writes changed the aborted run")
 	}
 	return nil
 }

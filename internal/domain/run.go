@@ -92,6 +92,10 @@ func (r *FermentationRun) StartFermentation(now time.Time) error {
 }
 
 func (r *FermentationRun) AddObservation(observation GravityObservation) error {
+	if r.State == RunCompleted || r.State == RunAborted {
+		return NewError(CodeRunState,
+			"completed or aborted runs cannot accept observations")
+	}
 	if !r.acceptsObservation() || r.StartedAt == nil {
 		return NewError(CodeRunState, "observations require a started run")
 	}
@@ -169,19 +173,9 @@ func (r FermentationRun) HadStarted() bool {
 }
 
 func (r FermentationRun) acceptsObservation() bool {
-	switch r.State {
-	case RunFermenting, RunCompleted, RunAborted:
-		return true
-	default:
-		return false
-	}
+	return r.State == RunFermenting
 }
 
 func (r FermentationRun) allowsCompletion() bool {
-	switch r.State {
-	case RunConditioning, RunCompleted:
-		return true
-	default:
-		return false
-	}
+	return r.State == RunConditioning
 }
