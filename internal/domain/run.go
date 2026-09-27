@@ -92,6 +92,9 @@ func (r *FermentationRun) StartFermentation(now time.Time) error {
 }
 
 func (r *FermentationRun) AddObservation(observation GravityObservation) error {
+	if r.isSealed() {
+		return NewError(CodeRunState, "completed or aborted runs are sealed")
+	}
 	if !r.acceptsObservation() || r.StartedAt == nil {
 		return NewError(CodeRunState, "observations require a started run")
 	}
@@ -134,6 +137,9 @@ func (r *FermentationRun) BeginConditioning(now time.Time) error {
 }
 
 func (r *FermentationRun) Complete(originalGravity float64, now time.Time) error {
+	if r.isSealed() {
+		return NewError(CodeRunState, "completed or aborted runs are sealed")
+	}
 	if !r.allowsCompletion() {
 		return NewError(CodeRunState, "run is not available for completion")
 	}
@@ -168,9 +174,13 @@ func (r FermentationRun) HadStarted() bool {
 	return r.StartedAt != nil
 }
 
+func (r FermentationRun) isSealed() bool {
+	return r.State == RunCompleted || r.State == RunAborted
+}
+
 func (r FermentationRun) acceptsObservation() bool {
 	switch r.State {
-	case RunFermenting, RunCompleted, RunAborted:
+	case RunFermenting, RunConditioning:
 		return true
 	default:
 		return false
@@ -179,7 +189,7 @@ func (r FermentationRun) acceptsObservation() bool {
 
 func (r FermentationRun) allowsCompletion() bool {
 	switch r.State {
-	case RunConditioning, RunCompleted:
+	case RunConditioning:
 		return true
 	default:
 		return false

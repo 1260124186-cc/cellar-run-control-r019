@@ -137,6 +137,51 @@ func observationsCompletion(api *client) error {
 		return err
 	}
 
+	sealedVersion := completed.Run.Version
+	sealedVesselVersion := completed.Vessel.Version
+	sealedEndedAt := completed.Run.EndedAt
+	sealedUpdatedAt := completed.Run.UpdatedAt
+	sealedVesselUpdatedAt := completed.Vessel.UpdatedAt
+	if sealedEndedAt == nil {
+		return errInvalidWorkflow("completed run has no end time")
+	}
+
+	sealedObservation, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/observations",
+		map[string]any{
+			"sequence":      4,
+			"gravity":       1.010,
+			"temperature_c": 20,
+			"observed_at":   verifiedAt(base, 4),
+			"note":          "late reading after completion",
+		}, ptrInt64(sealedVersion))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(sealedObservation, 409, string(domain.CodeRunState),
+		"append observation to completed run"); err != nil {
+		return err
+	}
+
+	sealedConditioning, err := api.call("POST",
+		"/v1/runs/"+started.Run.ID+"/conditioning", nil, ptrInt64(sealedVersion))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(sealedConditioning, 409, string(domain.CodeRunState),
+		"recondition a completed run"); err != nil {
+		return err
+	}
+
+	sealedAbort, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/abort",
+		nil, ptrInt64(sealedVersion))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(sealedAbort, 409, string(domain.CodeRunState),
+		"abort a completed run"); err != nil {
+		return err
+	}
+
 	readResponse, err := api.call("GET", "/v1/runs/"+started.Run.ID, nil, nil)
 	if err != nil {
 		return err
@@ -148,8 +193,47 @@ func observationsCompletion(api *client) error {
 	if err := readResponse.decode(&readBack); err != nil {
 		return err
 	}
-	if len(readBack.Observations) != 3 || readBack.Metrics == nil {
-		return errInvalidWorkflow("completed run lost observations or metrics")
+	if err := requireRunState(readBack, domain.RunCompleted); err != nil {
+		return err
+	}
+	if readBack.Version != sealedVersion {
+		return errInvalidWorkflow("rejected write changed the sealed run version")
+	}
+	if len(readBack.Observations) != 3 {
+		return errInvalidWorkflow("sealed run accepted a late observation")
+	}
+	if readBack.EndedAt == nil || !readBack.EndedAt.Equal(*sealedEndedAt) {
+		return errInvalidWorkflow("rejected write changed the completion end time")
+	}
+	if !readBack.UpdatedAt.Equal(sealedUpdatedAt) {
+		return errInvalidWorkflow("rejected write changed the sealed run update time")
+	}
+	if readBack.Metrics == nil ||
+		readBack.Metrics.ObservationCount != completed.Run.Metrics.ObservationCount ||
+		readBack.Metrics.ApparentAttenuation != completed.Run.Metrics.ApparentAttenuation ||
+		readBack.Metrics.EstimatedAlcoholABV != completed.Run.Metrics.EstimatedAlcoholABV {
+		return errInvalidWorkflow("completion metrics changed after sealing")
+	}
+
+	vesselResponse, err := api.call("GET", "/v1/vessels/"+vessel.ID, nil, nil)
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(vesselResponse, 200, "read completion vessel"); err != nil {
+		return err
+	}
+	var readBackVessel vesselView
+	if err := vesselResponse.decode(&readBackVessel); err != nil {
+		return err
+	}
+	if err := requireVesselState(readBackVessel, domain.VesselCleaning); err != nil {
+		return err
+	}
+	if readBackVessel.Version != sealedVesselVersion {
+		return errInvalidWorkflow("rejected completion changed the vessel version")
+	}
+	if !readBackVessel.UpdatedAt.Equal(sealedVesselUpdatedAt) {
+		return errInvalidWorkflow("rejected completion changed the vessel update time")
 	}
 	return nil
 }

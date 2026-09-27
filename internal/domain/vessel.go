@@ -106,7 +106,7 @@ func (v *Vessel) Retire(now time.Time) error {
 
 func (v Vessel) canStartCleaning() bool {
 	switch v.State {
-	case VesselReserved, VesselInUse, VesselCleaning:
+	case VesselReserved, VesselInUse:
 		return true
 	default:
 		return false
